@@ -228,7 +228,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           mkdir -p downloads
-          python3 scripts/move_outputs.py release_files downloads
+          python3 scripts/publish_grouped.py release_files downloads --name "$WF_STEPS_RETRIEVE_OUTPUTS_FILENAME"
           git add downloads/
           python3 scripts/check_staged_sizes.py
           git diff --cached --quiet || git commit -m "⬇️ YouTube: ${WF_STEPS_RETRIEVE_OUTPUTS_FILENAME} [skip ci]"

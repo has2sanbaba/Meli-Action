@@ -137,11 +137,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           WF_GITHUB_EVENT_INPUTS_OUTPUT_FOLDER: ${{ github.event.inputs.output_folder }}
+          WF_STEPS_DOWNLOAD_OUTPUTS_FILENAME: ${{ steps.download.outputs.filename }}
         run: |
           FOLDER="${WF_GITHUB_EVENT_INPUTS_OUTPUT_FOLDER}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          python3 scripts/move_outputs.py "$RUNNER_TEMP/meli-video" "$FOLDER"
+          python3 scripts/publish_grouped.py "$RUNNER_TEMP/meli-video" "$FOLDER" --name "$WF_STEPS_DOWNLOAD_OUTPUTS_FILENAME"
           git add -- "$FOLDER/"
           python3 scripts/check_staged_sizes.py
           git diff --cached --quiet || git commit -m "Add downloaded video(s) [skip ci]"

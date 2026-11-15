@@ -150,7 +150,7 @@ jobs:
           if [ -f "${ARCHIVE_PATH}.001" ] && [ ! -f "${ARCHIVE_PATH}.002" ]; then
             mv "${ARCHIVE_PATH}.001" "$ARCHIVE_PATH"
           fi
-          python3 "$GITHUB_WORKSPACE/scripts/move_outputs.py" "$ARCHIVE_DIR" "$GITHUB_WORKSPACE/${WF_INPUTS_OUTPUT_FOLDER}"
+          python3 "$GITHUB_WORKSPACE/scripts/publish_grouped.py" "$ARCHIVE_DIR" "$GITHUB_WORKSPACE/${WF_INPUTS_OUTPUT_FOLDER}" --name "$ARCHIVE_NAME"
 
       - name: Commit and push
         env:
