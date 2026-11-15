@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: sudo apt-get update -qq && sudo apt-get install -y p7zip-full ffmpeg
-      - run: python -m pip install requests pyyaml "playwright==1.65.2" "yt-dlp[default]" "spotdl==4.6.0"
+      - run: python -m pip install requests pyyaml "playwright==1.65.2" "yt-dlp[default,curl-cffi]" "spotdl==4.6.0"
       - run: python -m pip install --no-deps --force-reinstall 'soupsieve @ git+https://github.com/facelessuser/soupsieve.git@7d028fdebbb7261849ee0c2a352b602ef70b7b14'
       - run: python scripts/check_soupsieve.py
       - run: python -m playwright install --with-deps --only-shell chromium
