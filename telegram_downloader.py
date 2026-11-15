@@ -141,10 +141,18 @@ def download_telegram_file(telegram_link, output_dir="."):
     api_url = "https://telegramdownloader.net/proxy.php"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     data = {"telegram_link": telegram_link}
+    # The service rejects requests without its own origin. These headers are
+    # for the metadata endpoint only, not arbitrary returned download hosts.
+    api_headers = {**headers, "Origin": "https://telegramdownloader.net",
+                   "Referer": "https://telegramdownloader.net/"}
 
     try:
-        print(f"🔗 Fetching download info...")
-        resp = requests.post(api_url, headers=headers, data=data, timeout=15)
+        print("🔗 Fetching download info...")
+        resp = requests.post(api_url, headers=api_headers, data=data, timeout=15)
+        if resp.status_code == 403:
+            print("❌ Telegram downloader service rejected the request (HTTP 403). "
+                  "The service may block the runner or require additional verification.")
+            return False, "", 0
         resp.raise_for_status()
         result = resp.json()
         raw_url = result.get('data', {}).get('data', {}).get('link')

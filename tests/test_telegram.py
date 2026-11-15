@@ -141,3 +141,63 @@ class TelegramValidatorTests(unittest.TestCase):
                 self.assertTrue(telegram.download_with_resume('https://example.com/two', path, {}))
             self.assertEqual(path.read_bytes(), b'other')
             self.assertEqual(session.get.call_args.kwargs['headers'], {})
+
+class TelegramServiceIntegrationTests(unittest.TestCase):
+    def test_metadata_uses_service_origin_and_downloads_file(self):
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        from urllib.parse import parse_qs
+
+        seen = []
+        download_headers = []
+        content = b'downloaded media'
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                headers = dict(self.headers)
+                length = int(self.headers['Content-Length'])
+                body = parse_qs(self.rfile.read(length).decode())
+                seen.append((headers, body))
+                if headers.get('Origin') != 'https://telegramdownloader.net' or headers.get('Referer') != 'https://telegramdownloader.net/':
+                    self.send_response(403); self.end_headers(); return
+                result = json.dumps({'data': {'data': {'link': f'http://127.0.0.1:{self.server.server_port}/file',
+                                                       'file_name': '../example.bin'}}}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(result)))
+                self.end_headers(); self.wfile.write(result)
+            def do_GET(self):
+                download_headers.append(dict(self.headers))
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers(); self.wfile.write(content)
+            def log_message(self, *args): pass
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            real_post = requests.post
+            def local_post(url, **kwargs):
+                self.assertEqual(url, 'https://telegramdownloader.net/proxy.php')
+                return real_post(f'http://127.0.0.1:{server.server_port}/proxy.php', **kwargs)
+            with tempfile.TemporaryDirectory() as tmp, patch.object(requests, 'post', side_effect=local_post):
+                ok, filename, size = telegram.download_telegram_file('https://t.me/example/1', tmp)
+                self.assertTrue(ok)
+                self.assertEqual(size, len(content))
+                self.assertEqual((Path(tmp) / filename).read_bytes(), content)
+                self.assertEqual(seen[0][1], {'telegram_link': ['https://t.me/example/1']})
+                self.assertNotIn('Origin', download_headers[0])
+                self.assertNotIn('Referer', download_headers[0])
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
+    def test_403_is_reported_without_parsing_body_or_starting_download(self):
+        import io
+        from contextlib import redirect_stdout
+        response_403 = Mock(status_code=403)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(requests, 'post', return_value=response_403), \
+             patch.object(telegram, 'download_with_resume') as download, redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(telegram.download_telegram_file('https://t.me/example/1', tmp), (False, '', 0))
+            self.assertIn('HTTP 403', output.getvalue())
+            response_403.json.assert_not_called()
+            download.assert_not_called()
