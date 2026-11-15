@@ -4,10 +4,12 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import tempfile
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 def _metadata_path(temp_path):
     return Path(str(temp_path) + '.meta')
@@ -137,6 +139,57 @@ def _download_with_session(session, url, output_path, temp_path, max_retries, ch
     print('\n❌ Max retries reached.')
     return False
 
+def download_public_video(telegram_link, output_dir):
+    """Fallback for single public videos exposed in Telegram's embed page."""
+    try:
+        parsed = urlsplit(telegram_link)
+        match = re.fullmatch(r'/([A-Za-z0-9_]{1,32})/([1-9][0-9]{0,18})/?', parsed.path)
+        if (parsed.scheme != 'https' or parsed.hostname != 't.me' or parsed.username
+                or parsed.password or parsed.port is not None or not match):
+            raise ValueError('Expected an HTTPS public Telegram post link')
+        channel, message_id = match.groups()
+        # Use a canonical link, avoiding unexpected query parameters.
+        canonical_url = f'https://t.me/{channel}/{message_id}'
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='.telegram-video-', dir=output_dir) as tmp:
+            staging = Path(tmp).resolve()
+            listing = staging / 'completed.txt'
+            template = str(staging / f'telegram_{channel}_{message_id}.%(ext)s')
+            cmd = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
+                   '--restrict-filenames', '--no-progress', '--quiet', '--socket-timeout', '30',
+                   '--retries', '3', '--output', template,
+                   '--print-to-file', 'after_move:filepath', str(listing), '--', canonical_url]
+            error_log = staging / 'ytdlp-errors.txt'
+            with error_log.open('wb') as errors:
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=errors, timeout=3600)
+            if result.returncode or not listing.is_file():
+                # Report status only: yt-dlp diagnostics can contain signed media URLs.
+                with error_log.open('rb') as errors:
+                    errors.seek(max(0, error_log.stat().st_size - 65536))
+                    error_tail = errors.read().decode('utf-8', errors='replace')
+                status = re.search(r'HTTP Error ([45][0-9]{2})', error_tail)
+                detail = f' (HTTP {status.group(1)})' if status else ''
+                raise ValueError('The public Telegram embed did not provide a downloadable video' + detail)
+            entries = listing.read_text(encoding='utf-8').splitlines()
+            if len(entries) != 1:
+                raise ValueError('Expected exactly one completed video')
+            source = Path(entries[0])
+            if (source.is_symlink() or not source.is_file() or source.resolve().parent != staging
+                    or not source.name.startswith(f'telegram_{channel}_{message_id}.')
+                    or source.stat().st_size == 0):
+                raise ValueError('Invalid video output')
+            destination = output_dir / source.name
+            # Exclusive hard link prevents overwriting existing output.
+            os.link(source, destination, follow_symlinks=False)
+            size = source.stat().st_size
+            print(f'✅ Downloaded public Telegram video ({size} bytes)')
+            return True, destination.name, size
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        print(f'❌ Public video fallback failed: {exc}')
+        return False, '', 0
+
+
 def download_telegram_file(telegram_link, output_dir="."):
     api_url = "https://telegramdownloader.net/proxy.php"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -150,9 +203,8 @@ def download_telegram_file(telegram_link, output_dir="."):
         print("🔗 Fetching download info...")
         resp = requests.post(api_url, headers=api_headers, data=data, timeout=15)
         if resp.status_code == 403:
-            print("❌ Telegram downloader service rejected the request (HTTP 403). "
-                  "The service may block the runner or require additional verification.")
-            return False, "", 0
+            print("⚠️ Telegram downloader service returned HTTP 403; trying the public video embed.")
+            return download_public_video(telegram_link, output_dir)
         resp.raise_for_status()
         result = resp.json()
         raw_url = result.get('data', {}).get('data', {}).get('link')
