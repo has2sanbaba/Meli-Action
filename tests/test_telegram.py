@@ -196,8 +196,87 @@ class TelegramServiceIntegrationTests(unittest.TestCase):
         from contextlib import redirect_stdout
         response_403 = Mock(status_code=403)
         with tempfile.TemporaryDirectory() as tmp, patch.object(requests, 'post', return_value=response_403), \
-             patch.object(telegram, 'download_with_resume') as download, redirect_stdout(io.StringIO()) as output:
+             patch.object(telegram, 'download_with_resume') as download, \
+             patch.object(telegram, 'download_public_video', return_value=(False, '', 0)) as fallback, \
+             redirect_stdout(io.StringIO()) as output:
             self.assertEqual(telegram.download_telegram_file('https://t.me/example/1', tmp), (False, '', 0))
             self.assertIn('HTTP 403', output.getvalue())
             response_403.json.assert_not_called()
             download.assert_not_called()
+            fallback.assert_called_once_with('https://t.me/example/1', tmp)
+
+class TelegramVideoFallbackTests(unittest.TestCase):
+    def test_rejects_untrusted_urls_before_subprocess(self):
+        invalid = ['https://t.me.evil.example/channel/1', 'https://t.me@evil.example/channel/1',
+                   'https://t.me/c/123/1', 'https://t.me/channel/-1', 'http://t.me/channel/1',
+                   'https://t.me/channel/1/extra', 'https://t.me:444/channel/1']
+        with tempfile.TemporaryDirectory() as tmp, patch.object(telegram.subprocess, 'run') as run:
+            for url in invalid:
+                with self.subTest(url=url):
+                    self.assertEqual(telegram.download_public_video(url, tmp), (False, '', 0))
+            run.assert_not_called()
+
+    def test_success_and_no_overwrite(self):
+        def fake_run(args, **kwargs):
+            self.assertEqual(args[-1], 'https://t.me/channel/123')
+            self.assertIn('--ignore-config', args)
+            self.assertIn('--no-playlist', args)
+            template = Path(args[args.index('--output') + 1])
+            video = Path(str(template).replace('%(ext)s', 'mp4'))
+            video.write_bytes(b'video content')
+            Path(args[args.index('--print-to-file') + 2]).write_text(str(video) + '\n')
+            return Mock(returncode=0)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(telegram.subprocess, 'run', side_effect=fake_run):
+            result = telegram.download_public_video('https://t.me/channel/123?tracking=yes', tmp)
+            self.assertEqual(result, (True, 'telegram_channel_123.mp4', 13))
+            self.assertEqual((Path(tmp) / result[1]).read_bytes(), b'video content')
+            self.assertEqual(telegram.download_public_video('https://t.me/channel/123', tmp), (False, '', 0))
+            self.assertEqual(sorted(p.name for p in Path(tmp).iterdir()), [result[1]])
+
+    def test_bad_output_is_not_published(self):
+        def fake_run(args, **kwargs):
+            Path(args[args.index('--print-to-file') + 2]).write_text('/etc/passwd\n')
+            return Mock(returncode=0)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(telegram.subprocess, 'run', side_effect=fake_run):
+            self.assertEqual(telegram.download_public_video('https://t.me/channel/123', tmp), (False, '', 0))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_403_fallback_uses_real_ytdlp_telegram_extractor_with_local_media(self):
+        import importlib.util
+        import os
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        if not importlib.util.find_spec('yt_dlp'):
+            self.skipTest('yt-dlp is not installed')
+        media = b'example-video-bytes'
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Type', 'video/mp4')
+                self.send_header('Content-Length', str(len(media)))
+                self.end_headers(); self.wfile.write(media)
+            def log_message(self, *args): pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); output = root / 'out'; output.mkdir()
+                # Replace only the external embed page; actual extractor,
+                # format selection, HTTP download and CLI output are real.
+                sitecustomize = root / 'sitecustomize.py'
+                sitecustomize.write_text('''import os
+from yt_dlp.extractor.telegram import TelegramEmbedIE
+TelegramEmbedIE._download_webpage = lambda self, *args, **kwargs: (
+    '<a class="tgme_widget_message_video_player" href="https://t.me/channel/123">'
+    '<video src="' + os.environ['TEST_VIDEO_URL'] + '"></video>'
+    '<time class="duration">0:01</time></a>'
+)
+''')
+                env = {'PYTHONPATH': tmp + os.pathsep + os.environ.get('PYTHONPATH', ''),
+                       'TEST_VIDEO_URL': f'http://127.0.0.1:{server.server_port}/video.mp4'}
+                with patch.dict(os.environ, env), patch.object(requests, 'post', return_value=Mock(status_code=403)):
+                    result = telegram.download_telegram_file('https://t.me/channel/123', str(output))
+                self.assertEqual(result, (True, 'telegram_channel_123.mp4', len(media)))
+                self.assertEqual((output / result[1]).read_bytes(), media)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
