@@ -138,7 +138,7 @@ jobs:
 
           mkdir -p downloads
 
-          python3 scripts/move_outputs.py temp_dl/archive downloads
+          python3 scripts/publish_grouped.py temp_dl/archive downloads --name "$WF_STEPS_DOWNLOAD_OUTPUTS_FILENAME"
 
           git add downloads/
           python3 scripts/check_staged_sizes.py

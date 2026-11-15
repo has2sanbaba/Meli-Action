@@ -212,7 +212,7 @@ jobs:
 
           mkdir -p downloads
 
-          python3 scripts/move_outputs.py release_files downloads
+          python3 scripts/publish_grouped.py release_files downloads
 
           git add downloads/
           python3 scripts/check_staged_sizes.py

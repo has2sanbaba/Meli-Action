@@ -53,7 +53,7 @@ class WorkflowScripts(unittest.TestCase):
             verifier.chmod(0o755)
             (root / 'downloads').mkdir()
             (root / 'scripts').mkdir()
-            shutil.copyfile('scripts/move_outputs.py', root / 'scripts/move_outputs.py')
+            shutil.copyfile('scripts/publish_grouped.py', root / 'scripts/publish_grouped.py')
             env = os.environ.copy()
             env['PATH'] = tmp + os.pathsep + env['PATH']
             env.update(RUNNER_TEMP=tmp, GITHUB_WORKSPACE=tmp, WF_INPUTS_ARCHITECTURE='arm64',
@@ -65,7 +65,7 @@ class WorkflowScripts(unittest.TestCase):
             env['WF_INPUTS_MERGE_SPLITS'] = 'false'
             subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', download], cwd=root, env=env, check=True)
             subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', archive], cwd=root, env=env, check=True)
-            archive_path = root / 'downloads' / 'com.example.app_arm64_splits_123.7z'
+            archive_path = root / 'downloads' / 'com.example.app_arm64_splits_123' / 'com.example.app_arm64_splits_123.7z'
             listing = subprocess.check_output([tool, 'l', '-slt', str(archive_path)], text=True)
             self.assertIn('Path = base.apk', listing)
             self.assertIn('Path = config.apk', listing)
@@ -102,7 +102,9 @@ class WorkflowScripts(unittest.TestCase):
                 outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
                 env['WF_STEPS_DOWNLOAD_OUTPUTS_FILEPATH'] = outputs['filepath']
                 subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', archive], cwd=root, env=env, check=True)
-                parts = sorted((root / 'temp_dl' / 'archive').glob('*.7z.0*'))
+                from scripts.publish_grouped import publish_grouped
+                publish_grouped(root / 'temp_dl' / 'archive', root / 'downloads', name='data.bin')
+                parts = sorted((root / 'downloads' / 'data.bin').glob('*.7z.0*'))
                 self.assertGreaterEqual(len(parts), 2)
                 extract = root / 'extracted'
                 subprocess.run([tool, 'x', '-y', '-ptestpassword', f'-o{extract}', str(parts[0])], check=True, capture_output=True)
@@ -206,8 +208,12 @@ class WorkflowScripts(unittest.TestCase):
                 archives = list(target.glob('*.zip'))
                 self.assertEqual(len(archives), 1)
                 self.assertFalse((target / basename).exists())
+                from scripts.publish_grouped import publish_grouped
+                archive_name = archives[0].name
+                publish_grouped(target, root / 'downloads', name=basename)
+                archive_path = root / 'downloads' / basename / archive_name
                 joined = root / 'joined.zip'
-                subprocess.run(['zip', '-s', '0', str(archives[0]), '--out', str(joined)], check=True, capture_output=True)
+                subprocess.run(['zip', '-s', '0', str(archive_path), '--out', str(joined)], check=True, capture_output=True)
                 output = subprocess.check_output(['unzip', '-p', str(joined)])
                 self.assertEqual(output, data)
 

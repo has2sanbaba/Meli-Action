@@ -105,8 +105,11 @@ class MainTests(unittest.TestCase):
                 Path('temp/keep').write_text('keep')
                 with patch.object(sys, 'argv', ['save_as_mhtml.py', '--url', 'https://example.com']), patch.object(mhtml, 'save_mhtml', fake_save):
                     mhtml.main()
+                with patch.object(sys, 'argv', ['save_as_mhtml.py', '--url', 'https://example.com']), patch.object(mhtml, 'save_mhtml', fake_save):
+                    mhtml.main()
+                self.assertTrue(Path('download/example.com (2)/example.com.zip').exists())
                 self.assertEqual(Path('temp/keep').read_text(), 'keep')
-                with zipfile.ZipFile('download/example.com.zip') as z:
+                with zipfile.ZipFile('download/example.com/example.com.zip') as z:
                     self.assertEqual(z.read('example.com.mhtml'), b'snapshot')
             finally:
                 os.chdir(old)

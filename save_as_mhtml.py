@@ -1,7 +1,6 @@
 """Capture a web page with Chromium and save it as a ZIP containing MHTML."""
 import argparse
 import asyncio
-import os
 from pathlib import Path
 import re
 import tempfile
@@ -9,6 +8,7 @@ from urllib.parse import urlparse
 import zipfile
 
 from scripts.validate_workflow import validate_url
+from scripts.publish_grouped import publish_grouped
 
 
 def sanitize_filename(name: str) -> str:
@@ -61,24 +61,20 @@ def main() -> None:
         parser.error(str(exc))
 
     download_dir = Path('download')
-    download_dir.mkdir(parents=True, exist_ok=True)
     mhtml_filename = f'{base_name}.mhtml'
-    zip_path = download_dir / f'{base_name}.zip'
     print(f'Downloading page → {mhtml_filename}')
-    # A private temporary directory avoids deleting or overwriting user files.
-    # Stage the archive beside its destination so os.replace is atomic.
+    # Stage privately and publish in a non-overwriting folder once complete.
     with tempfile.TemporaryDirectory() as temp_dir:
-        mhtml_path = Path(temp_dir) / mhtml_filename
+        temp_root = Path(temp_dir)
+        mhtml_path = temp_root / mhtml_filename
         asyncio.run(save_mhtml(args.url, str(mhtml_path)))
-        with tempfile.NamedTemporaryFile(dir=download_dir, suffix='.tmp', delete=False) as temp_zip:
-            temp_zip_path = Path(temp_zip.name)
-        try:
-            with zipfile.ZipFile(temp_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.write(mhtml_path, arcname=mhtml_filename)
-            os.replace(temp_zip_path, zip_path)
-        finally:
-            temp_zip_path.unlink(missing_ok=True)
-    print(f'Created {zip_path} (contains {mhtml_filename})')
+        archive_dir = temp_root / 'archive'
+        archive_dir.mkdir()
+        zip_path = archive_dir / f'{base_name}.zip'
+        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(mhtml_path, arcname=mhtml_filename)
+        [published] = publish_grouped(archive_dir, download_dir, name=base_name)
+    print(f'Created {published} (contains {mhtml_filename})')
 
 
 if __name__ == '__main__':
