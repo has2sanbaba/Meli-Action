@@ -144,7 +144,7 @@ jobs:
           shopt -s nullglob
           files=(*.apk *.zip)
           [ "${#files[@]}" -gt 0 ] || { echo "::error::No downloaded files to archive"; exit 1; }
-          7z a -mx=3 -v85m "$ARCHIVE_PATH" -- "${files[@]}"
+          7z a -mx=9 -mmt=2 -md=64m -v85m "$ARCHIVE_PATH" -- "${files[@]}"
 
           # Rename single-chunk archive to .7z
           if [ -f "${ARCHIVE_PATH}.001" ] && [ ! -f "${ARCHIVE_PATH}.002" ]; then

@@ -41,7 +41,7 @@ permissions:
 jobs:
   direct-download:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 180
 
     steps:
       - name: Checkout Repository
@@ -107,9 +107,9 @@ jobs:
           ARCHIVE_BASE="${BASENAME%.*}_$(date +%Y%m%d_%H%M%S)"
 
           if [ -n "$PASS" ]; then
-            7z a -p"$PASS" -mhe=on -mx=3 -v${THRESH_MB}m "../archive/${ARCHIVE_BASE}.7z" -- "$BASENAME"
+            7z a -p"$PASS" -mhe=on -mx=9 -mmt=2 -md=64m -v${THRESH_MB}m "../archive/${ARCHIVE_BASE}.7z" -- "$BASENAME"
           else
-            7z a -mx=3 -v${THRESH_MB}m "../archive/${ARCHIVE_BASE}.7z" -- "$BASENAME"
+            7z a -mx=9 -mmt=2 -md=64m -v${THRESH_MB}m "../archive/${ARCHIVE_BASE}.7z" -- "$BASENAME"
           fi
 
           if [ -f "../archive/${ARCHIVE_BASE}.7z.001" ] && [ ! -f "../archive/${ARCHIVE_BASE}.7z.002" ]; then

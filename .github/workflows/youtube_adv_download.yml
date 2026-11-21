@@ -372,7 +372,7 @@ jobs:
               if [ -e "$OUTPUT_FOLDER/${fname}.zip" ] || [ "${#parts[@]}" -gt 0 ]; then
                 echo "::error::Archive or split parts already exist for $fname"; exit 1
               fi
-              zip -j -s "${THRESH_MB}m" "$OUTPUT_FOLDER/${fname}.zip" -- "$f"
+              zip -9 -j -s "${THRESH_MB}m" "$OUTPUT_FOLDER/${fname}.zip" -- "$f"
               rm -- "$f"
             fi
           done

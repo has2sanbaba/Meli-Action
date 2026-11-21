@@ -123,7 +123,7 @@ jobs:
             [[ "$WF_GITHUB_EVENT_INPUTS_ARCHIVE_NAME" =~ ^[a-zA-Z0-9_-]{1,100}$ ]] || { echo "::error::Invalid archive name"; exit 1; }
             ARCHIVE_NAME="${WF_GITHUB_EVENT_INPUTS_ARCHIVE_NAME}_${RANDOM_HEX}"
             echo "Archive base name: ${ARCHIVE_NAME}"
-            7z a -v95m -mx=3 "${ARCHIVE_NAME}.7z" -- "$FILENAME"
+            7z a -v95m -mx=9 -mmt=2 -md=64m "${ARCHIVE_NAME}.7z" -- "$FILENAME"
             rm "$FILENAME"   # Remove original file after successful split
             echo "split_done=true" >> $GITHUB_OUTPUT
             echo "Split completed. Parts created:"

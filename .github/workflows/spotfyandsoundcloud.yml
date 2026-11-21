@@ -54,7 +54,7 @@ permissions:
 jobs:
   media-download:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 180
 
     steps:
       - name: Checkout Repository
@@ -187,7 +187,7 @@ jobs:
               if [ -e "$ARCHIVE" ] || [ "${#parts[@]}" -gt 0 ]; then
                 echo "::error::Archive or split parts already exist: $ARCHIVE"; exit 1
               fi
-              zip -r -s "${THRESH_MB}m" "$ARCHIVE" -- "./$FILE"
+              zip -9 -r -s "${THRESH_MB}m" "$ARCHIVE" -- "./$FILE"
 
               rm -f -- "$FILE"
             fi
