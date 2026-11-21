@@ -71,7 +71,7 @@ def main() -> None:
         archive_dir = temp_root / 'archive'
         archive_dir.mkdir()
         zip_path = archive_dir / f'{base_name}.zip'
-        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             archive.write(mhtml_path, arcname=mhtml_filename)
         [published] = publish_grouped(archive_dir, download_dir, name=base_name)
     print(f'Created {published} (contains {mhtml_filename})')

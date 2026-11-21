@@ -83,7 +83,7 @@ jobs:
           if [ -n "$FILE_SIZE" ] && [ "$FILE_SIZE" -gt "$LIMIT" ]; then
             echo "✂️ File (${FILE_SIZE} bytes) exceeds ${THRESHOLD}MB, splitting into parts..."
             cd "$RUNNER_TEMP/meli-telegram"
-            zip -s "${THRESHOLD}m" "${FILENAME}.zip" -j "$FILENAME"
+            zip -9 -s "${THRESHOLD}m" "${FILENAME}.zip" -j "$FILENAME"
             rm "$FILENAME"
             cd ..
           else

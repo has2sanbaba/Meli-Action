@@ -50,7 +50,7 @@ permissions:
 jobs:
   youtube-download:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
 
     steps:
       - name: 📂 Checkout Repository
@@ -206,7 +206,7 @@ jobs:
             BASE="${FILENAME%.*}"
             # split directly inside release_files
             cd release_files
-            zip -r -s "${THRESH_MB}m" "${BASE}.zip" -- "$FILENAME"
+            zip -9 -r -s "${THRESH_MB}m" "${BASE}.zip" -- "$FILENAME"
             rm -- "$FILENAME"
             cd ..
             echo "Parts created:"

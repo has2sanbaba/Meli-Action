@@ -103,8 +103,10 @@ class MainTests(unittest.TestCase):
                 os.chdir(tmp)
                 Path('temp').mkdir()
                 Path('temp/keep').write_text('keep')
-                with patch.object(sys, 'argv', ['save_as_mhtml.py', '--url', 'https://example.com']), patch.object(mhtml, 'save_mhtml', fake_save):
+                with patch.object(sys, 'argv', ['save_as_mhtml.py', '--url', 'https://example.com']), patch.object(mhtml, 'save_mhtml', fake_save), patch.object(mhtml.zipfile, 'ZipFile', wraps=zipfile.ZipFile) as create_archive:
                     mhtml.main()
+                    self.assertEqual(create_archive.call_args.kwargs['compresslevel'], 9)
+                    self.assertEqual(create_archive.call_args.kwargs['compression'], zipfile.ZIP_DEFLATED)
                 with patch.object(sys, 'argv', ['save_as_mhtml.py', '--url', 'https://example.com']), patch.object(mhtml, 'save_mhtml', fake_save):
                     mhtml.main()
                 self.assertTrue(Path('download/example.com (2)/example.com.zip').exists())
