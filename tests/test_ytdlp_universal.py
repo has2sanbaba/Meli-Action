@@ -82,6 +82,7 @@ Path(a[a.index('--print-to-file') + 2]).write_text('\\n'.join(map(str, paths)) +
             self.assertEqual(json.loads((Path(tmp) / 'meli-video-manifest.json').read_text()), ['one.mp4', 'two.webm'])
             self.assertEqual({p.name for p in (Path(tmp) / 'meli-video').iterdir()}, {'one.mp4', 'two.webm'})
             self.assertIn('is_collection=true', (Path(tmp) / 'output').read_text())
+            self.assertIn('total_bytes=20', (Path(tmp) / 'output').read_text())
 
     @unittest.skipUnless(shutil.which('yt-dlp'), 'yt-dlp is required')
     def test_real_ytdlp_downloads_generic_audio_collection_and_workflow_publishes_it(self):

@@ -13,7 +13,7 @@ on:
         type: string
         default: 'downloads'
       upload_method:
-        description: 'Use Release for large downloads; repository stores files in Git history'
+        description: 'Requested destination; downloads of 1 GiB or more automatically use Release'
         required: true
         type: choice
         options:
@@ -24,7 +24,7 @@ on:
         description: 'Video quality (yt-dlp format selector)'
         required: true
         type: string
-        default: 'bv*+ba/b'
+        default: 'bv*[height<=720]+ba/b[height<=720]/bv*[height<=720]/ba'
       download_playlist:
         description: 'Download playlist when the URL also identifies a single video'
         required: false
@@ -57,13 +57,6 @@ jobs:
             repository|release) ;;
             *) echo "::error::Invalid upload method"; exit 1 ;;
           esac
-
-      - name: Validate inputs
-        if: inputs.upload_method != 'release'
-        env:
-          FOLDER: ${{ inputs.output_folder }}
-        run: |
-          python3 scripts/validate_workflow.py --folder "$FOLDER"
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -171,10 +164,40 @@ jobs:
           with open(sys.argv[4], 'a', encoding='utf-8') as out:
               print(f'filename={files[0]}', file=out)
               print(f'size_bytes={(folder / files[0]).stat().st_size}', file=out)
+              print(f'total_bytes={sum((folder / name).stat().st_size for name in files)}', file=out)
               print(f'is_collection={str(len(files) > 1).lower()}', file=out)
           print(f'Completed {len(files)} file(s)')
           PYCODE
         shell: bash
+
+      - name: Choose upload destination
+        id: destination
+        env:
+          REQUESTED_METHOD: ${{ inputs.upload_method }}
+          TOTAL_BYTES: ${{ steps.download.outputs.total_bytes }}
+        shell: bash
+        run: |
+          [[ "$TOTAL_BYTES" =~ ^[0-9]+$ ]] || { echo "::error::Invalid download size"; exit 1; }
+          case "$REQUESTED_METHOD" in
+            repository|release) ;;
+            *) echo "::error::Invalid upload method"; exit 1 ;;
+          esac
+          METHOD="$REQUESTED_METHOD"
+          # Reserve headroom under GitHub's 2 GiB single-push limit. The sum
+          # includes every completed playlist item before any split/archive.
+          if [ "$METHOD" = repository ] && [ "$TOTAL_BYTES" -ge $((1024 * 1024 * 1024)) ]; then
+            METHOD=release
+            echo "::notice::Downloaded files total at least 1 GiB; using Release instead of repository."
+          fi
+          echo "Upload destination: $METHOD (downloaded bytes: $TOTAL_BYTES)"
+          echo "method=$METHOD" >> "$GITHUB_OUTPUT"
+
+      - name: Validate inputs
+        if: steps.destination.outputs.method == 'repository'
+        env:
+          FOLDER: ${{ inputs.output_folder }}
+        run: |
+          python3 scripts/validate_workflow.py --folder "$FOLDER"
 
       - name: Conditional split (if file > 99 MB)
         id: split
@@ -212,7 +235,7 @@ jobs:
           fi
 
       - name: Commit and push to repository
-        if: inputs.upload_method != 'release'
+        if: steps.destination.outputs.method == 'repository'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           WF_GITHUB_EVENT_INPUTS_OUTPUT_FOLDER: ${{ github.event.inputs.output_folder }}
@@ -235,7 +258,7 @@ jobs:
           bash scripts/push_current_branch.sh
 
       - name: Prepare flat Release assets
-        if: inputs.upload_method == 'release'
+        if: steps.destination.outputs.method == 'release'
         env:
           WF_IS_COLLECTION: ${{ steps.download.outputs.is_collection }}
           WF_ARCHIVE_NAME: ${{ inputs.archive_name }}
@@ -267,7 +290,7 @@ jobs:
           done
 
       - name: Upload to GitHub Releases
-        if: inputs.upload_method == 'release'
+        if: steps.destination.outputs.method == 'release'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ format('yt-dlp-{0}-{1}', github.run_id, github.run_attempt) }}
@@ -282,7 +305,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Publish completed GitHub Release
-        if: inputs.upload_method == 'release'
+        if: steps.destination.outputs.method == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ format('yt-dlp-{0}-{1}', github.run_id, github.run_attempt) }}
