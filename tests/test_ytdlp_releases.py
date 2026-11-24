@@ -31,9 +31,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         stage = next(s for s in steps if s.get('name') == 'Prepare flat Release assets')
         upload = next(s for s in steps if s.get('name') == 'Upload to GitHub Releases')
         publish = next(s for s in steps if s.get('name') == 'Publish completed GitHub Release')
-        self.assertEqual(push['if'], "inputs.upload_method != 'release'")
+        self.assertEqual(push['if'], "steps.destination.outputs.method == 'repository'")
         for step in (stage, upload, publish):
-            self.assertEqual(step['if'], "inputs.upload_method == 'release'")
+            self.assertEqual(step['if'], "steps.destination.outputs.method == 'release'")
         self.assertTrue(upload['with']['draft'])
         self.assertFalse(upload['with']['overwrite_files'])
         self.assertTrue(upload['with']['fail_on_unmatched_files'])
