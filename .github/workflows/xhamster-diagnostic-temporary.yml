@@ -1,0 +1,111 @@
+# TEMPORARY: remove this one file after investigation. No checkout, downloads,
+# secrets, artifacts or repository writes. The push trigger is restricted to this
+# branch and this file so the diagnostic runs once when it is added/updated.
+name: Temporary XHamster diagnostic
+on:
+  push:
+    branches: [arena/5ee0ec9b-meli-action]
+    paths: [.github/workflows/xhamster-diagnostic-temporary.yml]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install the version from the failed run
+        run: python -m pip install 'yt-dlp[default,curl-cffi]==2026.11.23'
+      - name: Inspect extraction without downloading media
+        shell: bash
+        run: |
+          python - <<'PYCODE'
+          import json
+          import re
+          from unittest import TestCase, main as unittest_main
+          from unittest.mock import patch
+          from urllib.parse import urlsplit
+
+          import yt_dlp
+          from yt_dlp.extractor.xhamster import XHamsterIE
+
+          # The second URL uses a reconstructed slug for a previously successful
+          # video ID; a redirect or failure might reflect the reconstructed slug.
+          CASES = (
+              ('previously_failed', 'https://xhamster.com/videos/tight-teen-holes-rough-stretched-by-two-black-dicks-xh1vzcG'),
+              ('previously_succeeded_reconstructed_slug', 'https://xhamster.com/videos/seehimnetwork-2-tongues-means-twice-the-rimming-featuring-codey-steele-with-chloe-temple-riley-star-xhqW8mc'),
+          )
+
+          class QuietLogger:
+              def debug(self, message): pass
+              def warning(self, message): pass
+              def error(self, message): pass
+
+          def page_summary(ie, webpage, response, video_id):
+              # Use the same patterns as this version of the extractor. Never
+              # print response bodies, JSON values, headers, URLs or exceptions.
+              summary = {'http_status': getattr(response, 'status', None)}
+              summary['redirected_host'] = (urlsplit(response.url).hostname or '').lower() != 'xhamster.com'
+              raw = ie._search_regex(
+                  (r'window\.initials\s*=\s*({.+?})\s*;\s*</script>',
+                   r'window\.initials\s*=\s*({.+?})\s*;'),
+                  webpage, 'initials', default=None)
+              summary['initials_pattern_found'] = raw is not None
+              parsed = ie._parse_json(raw, video_id, fatal=False) if raw else None
+              summary['initials_is_object'] = isinstance(parsed, dict)
+              summary['initials_nonempty'] = bool(parsed) if isinstance(parsed, dict) else None
+              summary['videoModel_present'] = 'videoModel' in parsed if isinstance(parsed, dict) else None
+              summary['xplayerSettings_present'] = 'xplayerSettings' in parsed if isinstance(parsed, dict) else None
+              summary['video_closed_marker'] = bool(re.search(r'id=["\']videoClosed["\']', webpage))
+              return summary
+
+          def diagnose(label, url):
+              observation = {'case': label, 'page': None}
+              original = XHamsterIE._download_webpage_handle
+              def inspect(ie, *args, **kwargs):
+                  webpage, response = original(ie, *args, **kwargs)
+                  try:
+                      observation['page'] = page_summary(ie, webpage, response, args[1])
+                  except Exception:
+                      observation['page'] = {'inspection_failed': True}
+                  return webpage, response
+              options = {
+                  'quiet': True, 'no_warnings': True, 'logger': QuietLogger(),
+                  'socket_timeout': 20, 'retries': 0, 'noplaylist': True,
+                  'ignoreconfig': True,
+              }
+              try:
+                  with patch.object(XHamsterIE, '_download_webpage_handle', inspect):
+                      with yt_dlp.YoutubeDL(options) as ydl:
+                          info = ydl.extract_info(url, download=False, process=False)
+                  formats = info.get('formats') or [] if isinstance(info, dict) else []
+                  observation['outcome'] = 'extracted'
+                  observation['format_count'] = len(formats)
+                  observation['video_format_count'] = sum(1 for f in formats if f.get('vcodec') != 'none')
+              except Exception:
+                  # Never print exception text: it may contain URLs or page data.
+                  observation['outcome'] = 'extraction_failed'
+              return observation
+
+          class InspectionTests(TestCase):
+              def test_nonempty_initials_without_video_model(self):
+                  response = type('Response', (), {'status': 200, 'url': 'https://xhamster.com/'})()
+                  with yt_dlp.YoutubeDL({'quiet': True, 'logger': QuietLogger()}) as ydl:
+                      result = page_summary(XHamsterIE(ydl), '<script>window.initials = {"example": true};</script>', response, 'id')
+                  self.assertTrue(result['initials_nonempty'])
+                  self.assertFalse(result['videoModel_present'])
+                  self.assertNotIn('example', json.dumps(result))
+
+          import os
+          if os.environ.get('SELF_TEST') == '1':
+              unittest_main()
+          else:
+              print('yt-dlp version:', yt_dlp.version.__version__)
+              for label, url in CASES:
+                  print(json.dumps(diagnose(label, url), sort_keys=True))
+          PYCODE
