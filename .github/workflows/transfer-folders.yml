@@ -1,0 +1,103 @@
+
+name: انتقال فولدر ها
+
+on:
+  workflow_dispatch:
+    inputs:
+      destination_repo:
+        description: "Destination repository (owner/repo)"
+        required: true
+        type: string
+
+      destination_branch:
+        description: "Destination branch"
+        required: true
+        default: "main"
+        type: string
+
+      paths:
+        description: "Folders/files to transfer (one path per line)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Checkout destination repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.destination_repo }}
+          ref: ${{ inputs.destination_branch }}
+          token: ${{ secrets.DEST_REPO_TOKEN }}
+          path: destination
+
+      - name: Copy selected files and folders
+        shell: bash
+        env:
+          SELECTED_PATHS: ${{ inputs.paths }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r path; do
+            path="${path#"${path%%[![:space:]]*}"}"
+            path="${path%"${path##*[![:space:]]}"}"
+
+            [ -z "$path" ] && continue
+
+            if [[ "$path" = /* ||
+                  "$path" == ".." ||
+                  "$path" == ../* ||
+                  "$path" == */../* ||
+                  "$path" == */.. ||
+                  "$path" == ".git" ||
+                  "$path" == .git/* ||
+                  "$path" == */.git ||
+                  "$path" == */.git/* ]]; then
+              echo "Invalid path: $path"
+              exit 1
+            fi
+
+            if [ ! -e "source/$path" ]; then
+              echo "Path not found: $path"
+              exit 1
+            fi
+
+            mkdir -p "destination/$(dirname "$path")"
+            rm -rf -- "destination/$path"
+            cp -a -- "source/$path" "destination/$path"
+
+            echo "Copied: $path"
+          done <<< "$SELECTED_PATHS"
+
+      - name: Commit and push
+        shell: bash
+        env:
+          DESTINATION_BRANCH: ${{ inputs.destination_branch }}
+        run: |
+          set -euo pipefail
+
+          cd destination
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Transfer selected folders from source repository"
+          git push origin "HEAD:${DESTINATION_BRANCH}"
+
