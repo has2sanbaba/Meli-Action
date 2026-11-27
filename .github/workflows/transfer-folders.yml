@@ -1,11 +1,11 @@
 
-name: انتقال فولدر ها
+name: Smart Repository Transfer
 
 on:
   workflow_dispatch:
     inputs:
       destination_repo:
-        description: "Destination repository (owner/repo)"
+        description: "Destination repository: owner/repo"
         required: true
         type: string
 
@@ -16,88 +16,371 @@ on:
         type: string
 
       paths:
-        description: "Folders/files to transfer (one path per line)"
+        description: "Selected directories, one per line"
         required: true
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: smart-transfer-${{ inputs.destination_repo }}-${{ inputs.destination_branch }}
+  cancel-in-progress: false
+
 jobs:
   transfer:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-      - name: Checkout source repository
+      - name: Checkout selected source folders
         uses: actions/checkout@v4
         with:
           path: source
+          ref: main
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: ${{ inputs.paths }}
+          sparse-checkout-cone-mode: true
 
-      - name: Checkout destination repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.destination_repo }}
-          ref: ${{ inputs.destination_branch }}
-          token: ${{ secrets.DEST_REPO_TOKEN }}
-          path: destination
-
-      - name: Copy selected files and folders
+      - name: Prepare destination and transfer files
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.DEST_REPO_TOKEN }}
+          DEST_REPO: ${{ inputs.destination_repo }}
+          DEST_BRANCH: ${{ inputs.destination_branch }}
           SELECTED_PATHS: ${{ inputs.paths }}
         run: |
           set -euo pipefail
 
-          while IFS= read -r path; do
-            path="${path#"${path%%[![:space:]]*}"}"
-            path="${path%"${path##*[![:space:]]}"}"
+          python3 <<'PY'
+          import os
+          import sys
+          import time
+          import shutil
+          import stat
+          import base64
+          import subprocess
+          from pathlib import Path
 
-            [ -z "$path" ] && continue
+          SRC = Path("source").resolve()
+          DST = Path("destination").resolve()
 
-            if [[ "$path" = /* ||
-                  "$path" == ".." ||
-                  "$path" == ../* ||
-                  "$path" == */../* ||
-                  "$path" == */.. ||
-                  "$path" == ".git" ||
-                  "$path" == .git/* ||
-                  "$path" == */.git ||
-                  "$path" == */.git/* ]]; then
-              echo "Invalid path: $path"
-              exit 1
-            fi
+          REPO = os.environ["DEST_REPO"]
+          BRANCH = os.environ["DEST_BRANCH"]
+          TOKEN = os.environ["GH_TOKEN"]
 
-            if [ ! -e "source/$path" ]; then
-              echo "Path not found: $path"
-              exit 1
-            fi
+          PATHS = [
+              p.strip()
+              for p in os.environ["SELECTED_PATHS"].splitlines()
+              if p.strip()
+          ]
 
-            mkdir -p "destination/$(dirname "$path")"
-            rm -rf -- "destination/$path"
-            cp -a -- "source/$path" "destination/$path"
+          LIMIT = 700 * 1024 * 1024
 
-            echo "Copied: $path"
-          done <<< "$SELECTED_PATHS"
+          if not TOKEN:
+              sys.exit("Missing destination token")
 
-      - name: Commit and push
-        shell: bash
-        env:
-          DESTINATION_BRANCH: ${{ inputs.destination_branch }}
-        run: |
-          set -euo pipefail
+          if "/" not in REPO or REPO.startswith("/") or ".." in REPO:
+              sys.exit("Invalid destination repository")
 
-          cd destination
+          for p in PATHS:
+              if (
+                  p.startswith("/")
+                  or p in (".", "..", ".git")
+                  or ".." in p.split("/")
+                  or ".git" in p.split("/")
+              ):
+                  sys.exit(f"Invalid path: {p}")
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              if not (SRC / p).exists():
+                  sys.exit(f"Source path not found: {p}")
 
-          git add -A
+          AUTH = base64.b64encode(
+              f"x-access-token:{TOKEN}".encode()
+          ).decode()
 
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
+          ENV = os.environ.copy()
+          ENV["GIT_TERMINAL_PROMPT"] = "0"
+          ENV["GIT_CONFIG_COUNT"] = "1"
+          ENV["GIT_CONFIG_KEY_0"] = "http.https://github.com/.extraheader"
+          ENV["GIT_CONFIG_VALUE_0"] = f"AUTHORIZATION: basic {AUTH}"
 
-          git commit -m "Transfer selected folders from source repository"
-          git push origin "HEAD:${DESTINATION_BRANCH}"
+          def git(args, check=True, data=None):
+              return subprocess.run(
+                  ["git", "-C", str(DST)] + args,
+                  env=ENV,
+                  input=data,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.PIPE,
+                  check=check
+              )
+
+          print("Initializing destination repository...")
+
+          DST.mkdir(exist_ok=True)
+
+          subprocess.run(
+              ["git", "init", str(DST)],
+              check=True
+          )
+
+          git(["remote", "add", "origin",
+               f"https://github.com/{REPO}.git"])
+
+          git([
+              "fetch",
+              "--no-tags",
+              "--depth=1",
+              "--filter=blob:none",
+              "origin",
+              f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}"
+          ])
+
+          git([
+              "update-ref",
+              f"refs/heads/{BRANCH}",
+              f"refs/remotes/origin/{BRANCH}"
+          ])
+
+          git([
+              "symbolic-ref",
+              "HEAD",
+              f"refs/heads/{BRANCH}"
+          ])
+
+          git(["read-tree", "HEAD"])
+
+          git(["config", "user.name", "github-actions[bot]"])
+          git([
+              "config", "user.email",
+              "41898282+github-actions[bot]@users.noreply.github.com"
+          ])
+
+          print("Preparing selected directories...")
+
+          files = []
+
+          for name in PATHS:
+              root = SRC / name
+
+              if root.is_symlink():
+                  files.append(root.relative_to(SRC).as_posix())
+                  continue
+
+              if root.is_file():
+                  files.append(root.relative_to(SRC).as_posix())
+                  continue
+
+              for current, dirs, names in os.walk(
+                  root, followlinks=False
+              ):
+                  current = Path(current)
+
+                  for directory in list(dirs):
+                      item = current / directory
+
+                      if item.is_symlink():
+                          dirs.remove(directory)
+                          files.append(
+                              item.relative_to(SRC).as_posix()
+                          )
+
+                  for filename in names:
+                      item = current / filename
+                      files.append(
+                          item.relative_to(SRC).as_posix()
+                      )
+
+          files = sorted(set(files))
+
+          print(f"Total files: {len(files)}")
+
+          def file_size(relative):
+              item = SRC / relative
+
+              if item.is_symlink():
+                  return len(os.readlink(item).encode())
+
+              return item.stat().st_size
+
+          total_bytes = sum(file_size(p) for p in files)
+
+          print(
+              f"Total source size: "
+              f"{total_bytes / 1024**3:.2f} GiB"
+          )
+
+          for p in files:
+              if file_size(p) >= 100 * 1024 * 1024:
+                  sys.exit(
+                      f"File exceeds safe GitHub limit: {p}"
+                  )
+
+          batches = []
+          current_batch = []
+          current_size = 0
+
+          for p in files:
+              size = file_size(p)
+
+              if current_batch and current_size + size > LIMIT:
+                  batches.append(current_batch)
+                  current_batch = []
+                  current_size = 0
+
+              current_batch.append(p)
+              current_size += size
+
+          if current_batch:
+              batches.append(current_batch)
+
+          if not batches:
+              batches = [[]]
+
+          print(f"Total batches: {len(batches)}")
+
+          print("Removing previous selected destination paths...")
+
+          git([
+              "rm", "-r", "--cached",
+              "--ignore-unmatch",
+              "--", *PATHS
+          ])
+
+          def push_with_retry(parent_sha):
+              local_sha = git(
+                  ["rev-parse", "HEAD"]
+              ).stdout.decode().strip()
+
+              for attempt in range(1, 7):
+
+                  print(f"Push attempt {attempt}/6")
+
+                  result = git([
+                      "push",
+                      "origin",
+                      f"HEAD:refs/heads/{BRANCH}"
+                  ], check=False)
+
+                  if result.returncode == 0:
+                      return
+
+                  print(result.stderr.decode(errors="replace"))
+
+                  fetch = git([
+                      "fetch",
+                      "--no-tags",
+                      "--depth=1",
+                      "origin",
+                      f"+refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}"
+                  ], check=False)
+
+                  if fetch.returncode != 0:
+                      time.sleep(20 * attempt)
+                      continue
+
+                  remote_sha = git([
+                      "rev-parse",
+                      f"refs/remotes/origin/{BRANCH}"
+                  ]).stdout.decode().strip()
+
+                  if remote_sha == local_sha:
+                      print("Remote accepted the commit.")
+                      return
+
+                  if remote_sha != parent_sha:
+                      raise RuntimeError(
+                          "Destination branch changed unexpectedly. "
+                          "Stopping to prevent overwriting changes."
+                      )
+
+                  time.sleep(20 * attempt)
+
+              raise RuntimeError("Push failed after six attempts")
+
+          for index, batch in enumerate(batches, 1):
+
+              print(
+                  f"Processing batch {index}/{len(batches)}"
+              )
+
+              copied = []
+
+              for relative in batch:
+
+                  src = SRC / relative
+                  dst = DST / relative
+
+                  dst.parent.mkdir(
+                      parents=True,
+                      exist_ok=True
+                  )
+
+                  if dst.exists() or dst.is_symlink():
+                      if dst.is_dir() and not dst.is_symlink():
+                          shutil.rmtree(dst)
+                      else:
+                          dst.unlink()
+
+                  if src.is_symlink():
+                      dst.symlink_to(os.readlink(src))
+                  else:
+                      shutil.copy2(src, dst)
+
+                  copied.append(relative)
+
+              if copied:
+                  payload = b"\0".join(
+                      p.encode() for p in copied
+                  ) + b"\0"
+
+                  git([
+                      "add",
+                      "-A",
+                      "--pathspec-from-file=-",
+                      "--pathspec-file-nul"
+                  ], data=payload)
+
+              if git(
+                  ["diff", "--cached", "--quiet"],
+                  check=False
+              ).returncode == 0:
+
+                  print("No changes in this batch.")
+                  continue
+
+              parent_sha = git(
+                  ["rev-parse", "HEAD"]
+              ).stdout.decode().strip()
+
+              git([
+                  "commit",
+                  "-m",
+                  f"Transfer batch {index}/{len(batches)}"
+              ])
+
+              push_with_retry(parent_sha)
+
+              print(f"Batch {index} successfully pushed.")
+
+              # Free working-tree space.
+              for relative in copied:
+                  item = DST / relative
+
+                  if item.is_symlink() or item.is_file():
+                      item.unlink(missing_ok=True)
+
+              # Respect GitHub's recommended push rate.
+              if index < len(batches):
+                  time.sleep(12)
+
+          print("================================")
+          print("TRANSFER COMPLETED")
+          print(f"Files processed: {len(files)}")
+          print(f"Batches: {len(batches)}")
+          print(f"Total size: {total_bytes / 1024**3:.2f} GiB")
+          print("================================")
+
+          PY
 
